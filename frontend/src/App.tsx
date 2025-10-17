@@ -398,7 +398,35 @@ function App() {
 
     try {
       setIsConnecting(true)
-      const web3Provider = new ethers.providers.Web3Provider(window.ethereum, 'any')
+      
+      // First, request to switch to Anvil network
+      try {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0x7a69' }], // 31337 in hex
+        })
+      } catch (switchError: any) {
+        // If network doesn't exist, add it
+        if (switchError.code === 4902) {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0x7a69', // 31337 in hex
+              chainName: 'Anvil Local',
+              rpcUrls: ['http://localhost:8545'],
+              nativeCurrency: {
+                name: 'ETH',
+                symbol: 'ETH',
+                decimals: 18
+              }
+            }]
+          })
+        } else {
+          throw switchError
+        }
+      }
+      
+      const web3Provider = new ethers.providers.Web3Provider(window.ethereum)
       await web3Provider.send('eth_requestAccounts', [])
       const connectedSigner = web3Provider.getSigner()
       const account = await connectedSigner.getAddress()
@@ -406,7 +434,7 @@ function App() {
       setWalletAddress(account)
       setSigner(connectedSigner)
       setReadProvider(web3Provider)
-      setStatusMessage({ type: 'success', text: 'Wallet connected successfully.' })
+      setStatusMessage({ type: 'success', text: 'Wallet connected successfully to Anvil Local.' })
     } catch (error) {
       if (error instanceof Error) {
         setStatusMessage({ type: 'error', text: `Wallet connection failed: ${error.message}` })
