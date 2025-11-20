@@ -1,0 +1,10 @@
+{
+  "name": "cryptoticketing",
+  "private": true,
+  "scripts": {
+    "postinstall": "cd frontend && npm ci"
+  },
+  "dependencies": {
+    "react-router-dom": "^7.9.6"
+  }
+}

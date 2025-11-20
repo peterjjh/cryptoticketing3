@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { ethers } from 'ethers'
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import AdminPanel from './AdminPanel';
 
 type UpcomingEvent = {
   id: string
@@ -67,6 +69,8 @@ const sectionTitleStyle: React.CSSProperties = {
   color: '#69f6ff',
   textShadow: '0 0 18px rgba(105, 246, 255, 0.65)',
 }
+
+
 
 function App() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
@@ -172,6 +176,9 @@ function App() {
     [],
   )
 
+
+
+
   // Configuration state
   const [config, setConfig] = useState<{
     contractAddress: string | null;
@@ -216,14 +223,21 @@ function App() {
   }, [loadConfig])
 
   const ticketAbi = useMemo(
-    () => [
-      'function getSaleOverview(uint256) view returns (uint256 stakeAmount,uint256 ticketSupply,uint256 ticketsMinted,bool isOpen,bool lotteryExecuted,uint256 entrantsCount,uint256 winnersCount)',
-      'function enterSale(uint256) payable',
-      'function hasEnteredSale(uint256,address) view returns (bool)',
-      'function isSaleWinner(uint256,address) view returns (bool)',
-    ],
-    [],
-  )
+  () => [
+    'function configureEventSale(uint256 eventId, uint256 stakeAmount, uint256 ticketSupply, uint256 maxTransferPricePercent) external',
+    'function getSaleOverview(uint256) view returns (uint256 stakeAmount,uint256 ticketSupply,uint256 ticketsMinted,bool isOpen,bool lotteryExecuted,uint256 entrantsCount,uint256 winnersCount)',
+    'function enterSale(uint256) payable',
+    'function hasEnteredSale(uint256,address) view returns (bool)',
+    'function isSaleWinner(uint256,address) view returns (bool)',
+    'function claimTicket(uint256 eventId) external returns (uint256)',
+    'function transferTicket(uint256 tokenId, address to, uint256 transferPrice) external payable',
+    'function runLottery(uint256 eventId, uint256 winnersCount, bytes32 randomSeed) external',
+    'function runLotteryAsEventOwner(uint256 eventId, uint256 winnersCount, bytes32 randomSeed) external',
+    'function eventOwners(uint256) view returns (address)',
+    'function getEventMaxTransferPrice(uint256) view returns (uint256)',
+  ],
+  [],
+)
 
   const loadReadProvider = useCallback(() => {
     if (config.rpcUrl) {
@@ -387,6 +401,48 @@ function App() {
     events.forEach((event) => refreshParticipantSnapshot(event.eventId, walletAddress))
   }, [baseTicketContract, walletAddress, events, refreshParticipantSnapshot])
 
+    // Effect 1: Listen for lottery completion events
+  useEffect(() => {
+    const handleLotteryComplete = (e: any) => {
+      const eventId = e.detail?.eventId;
+      if (eventId && walletAddress) {
+        refreshParticipantSnapshot(eventId, walletAddress);
+      }
+    };
+
+    window.addEventListener('lotteryCompleted', handleLotteryComplete);
+    return () => window.removeEventListener('lotteryCompleted', handleLotteryComplete);
+  }, [walletAddress, refreshParticipantSnapshot]);
+
+  // Effect 2: Refresh sale details and participant status every 5 seconds
+  useEffect(() => {
+    if (!baseTicketContract || !events.length) {
+      return;
+    }
+
+    // Refresh immediately on mount
+    events.forEach((event) => {
+      refreshSaleDetails(event.eventId);
+      if (walletAddress) {
+        refreshParticipantSnapshot(event.eventId, walletAddress);
+      }
+    });
+
+    // Then refresh every 5 seconds
+    const interval = setInterval(() => {
+      events.forEach((event) => {
+        refreshSaleDetails(event.eventId);
+
+        // Also refresh participant status for current wallet
+        if (walletAddress) {
+          refreshParticipantSnapshot(event.eventId, walletAddress);
+        }
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [baseTicketContract, events, walletAddress, refreshSaleDetails, refreshParticipantSnapshot]);
+
   const connectWallet = async () => {
     if (!window.ethereum) {
       setStatusMessage({
@@ -479,7 +535,67 @@ function App() {
     [ticketContractWithSigner, refreshSaleDetails, refreshParticipantSnapshot, walletAddress],
   )
 
+  //NFT Ticketing contract interaction setup
+  const [claimingTicket, setClaimingTicket] = useState<number | null>(null)
+  const handleClaimTicket = useCallback(
+  async (eventId: number) => {
+    if (!ticketContractWithSigner) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Connect your wallet to claim a ticket.',
+      })
+      return
+    }
+
+    try {
+      setClaimingTicket(eventId)
+      setStatusMessage({
+        type: 'info',
+        text: 'Minting your NFT ticket... Confirm in your wallet.',
+      })
+
+      const tx = await ticketContractWithSigner.claimTicket(eventId)
+      console.log('📋 Claim tx:', tx.hash)
+      const receipt = await tx.wait()
+      console.log('✅ Ticket claimed successfully!', receipt)
+
+      setStatusMessage({
+        type: 'success',
+        text: `🎫 NFT Ticket #${receipt.events?.[0]?.args?.tokenId || 'minted'} claimed! Check your wallet.`,
+      })
+
+      // Refresh participant status
+      await refreshParticipantSnapshot(eventId, walletAddress!)
+      await refreshSaleDetails(eventId)
+    } catch (error) {
+      console.error('❌ Claim failed:', error)
+      if (error instanceof Error) {
+        // Check if already claimed
+        if (error.message.includes('Already claimed')) {
+          setStatusMessage({
+            type: 'success',
+            text: `✅ Ticket already claimed! Check your wallet for your NFT.`,
+          })
+          // Still refresh to update UI
+          await refreshParticipantSnapshot(eventId, walletAddress!)
+        } else {
+          setStatusMessage({
+            type: 'error',
+            text: `Failed to claim ticket: ${error.message}`,
+          })
+        }
+      }
+    } finally {
+      setClaimingTicket(null)
+    }
+  },
+  [ticketContractWithSigner, walletAddress, refreshParticipantSnapshot, refreshSaleDetails],
+)
+
   return (
+    <Router>
+      <Routes>
+        <Route path="/" element={
     <div
       style={{
         background:
@@ -584,6 +700,36 @@ function App() {
               Explore Contracts
             </button>
           </div>
+        </div>
+
+        {/* ADD THIS OWNER LOGIN BUTTON */}
+        <div
+              style={{
+                position: 'absolute',
+                top: '32px',
+                right: '32px',
+              }}
+            >
+              <Link to="/admin">
+                <button
+                  type="button"
+                  style={{
+                    background: 'rgba(8, 231, 255, 0.08)',
+                    color: '#9ad6ff',
+                    border: '1px solid rgba(120, 215, 255, 0.35)',
+                    padding: '12px 24px',
+                    borderRadius: '14px',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.06em',
+                    boxShadow: '0 12px 36px rgba(89, 0, 255, 0.25)',
+                  }}
+                >
+                  Owner Login
+                </button>
+              </Link>
         </div>
       </header>
 
@@ -849,24 +995,80 @@ function App() {
                       </div>
                     </div>
 
-                    {walletAddress && (
-                      <div
-                        style={{
-                          marginTop: '12px',
-                          padding: '12px 14px',
-                          borderRadius: '12px',
-                          background: 'rgba(105, 246, 255, 0.12)',
-                          color: '#69f6ff',
-                          fontSize: '14px',
-                          letterSpacing: '0.05em',
-                          border: '1px solid rgba(105,246,255,0.25)',
-                        }}
-                      >
-                        {participant?.hasEntered
-                          ? participant.isWinner
-                            ? 'You won the lottery! Claim your ticket from the contract.'
-                            : 'You have entered the lottery. Await the draw or withdraw if not selected.'
-                          : 'You have not entered this lottery yet.'}
+                                        {walletAddress && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+                        {/* LOTTERY RESULTS - Show AFTER lottery is executed */}
+                        {sale?.lotteryExecuted ? (
+                          <>
+                            {/* Results message for all participants */}
+                            <div
+                              style={{
+                                padding: '14px 16px',
+                                borderRadius: '12px',
+                                background: participant?.isWinner
+                                  ? 'rgba(0, 255, 224, 0.16)'
+                                  : 'rgba(255, 111, 216, 0.16)',
+                                color: participant?.isWinner ? '#0ddfc2' : '#ff72f9',
+                                fontSize: '14px',
+                                letterSpacing: '0.05em',
+                                border: participant?.isWinner
+                                  ? '1px solid rgba(0,255,224,0.35)'
+                                  : '1px solid rgba(255, 111, 216, 0.35)',
+                                fontWeight: 600,
+                              }}
+                            >
+                              {participant?.hasEntered
+                                ? participant.isWinner
+                                  ? '🎉 CONGRATULATIONS! You won the lottery!'
+                                  : '😢 Better luck next time. You were not selected in this lottery.'
+                                : '⏸️ You did not enter this lottery.'}
+                            </div>
+
+                            {/* Claim Ticket Button - Only for Winners */}
+                            {participant?.isWinner && (
+                                    <button
+                                      onClick={() => handleClaimTicket(event.eventId)}
+                                      disabled={claimingTicket === event.eventId}
+                                      style={{
+                                        background: claimingTicket === event.eventId 
+                                          ? 'rgba(0, 255, 224, 0.5)'
+                                          : 'linear-gradient(135deg, rgba(0,255,224,0.9), rgba(255,111,216,0.9))',
+                                        color: '#05060f',
+                                        border: '1px solid rgba(105,246,255,0.4)',
+                                        padding: '13px 20px',
+                                        borderRadius: '12px',
+                                        fontSize: '13px',
+                                        fontWeight: 700,
+                                        cursor: claimingTicket === event.eventId ? 'not-allowed' : 'pointer',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.08em',
+                                        boxShadow: '0 12px 30px rgba(0,255,224,0.35)',
+                                        opacity: claimingTicket === event.eventId ? 0.7 : 1,
+                                        transition: 'all 0.2s ease',
+                                      }}
+                                    >
+                                      {claimingTicket === event.eventId ? 'Minting NFT...' : '🎫 Claim NFT Ticket'}
+                                    </button>
+                                  )}
+                          </>
+                        ) : (
+                          /* BEFORE LOTTERY - Show entered status */
+                          <div
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: '12px',
+                              background: 'rgba(105, 246, 255, 0.12)',
+                              color: '#69f6ff',
+                              fontSize: '14px',
+                              letterSpacing: '0.05em',
+                              border: '1px solid rgba(105,246,255,0.25)',
+                            }}
+                          >
+                            {participant?.hasEntered
+                              ? 'You have entered the lottery. Await the draw or withdraw if not selected.'
+                              : 'You have not entered this lottery yet.'}
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -995,7 +1197,31 @@ function App() {
         </p>
       </footer>
     </div>
+  } />
+    <Route path="/admin" element={
+      <AdminPanel 
+        ticketContractWithSigner={ticketContractWithSigner}
+        onEventCreated={(newEvent) => {
+          // Add new event to the events list
+          setEvents((prev) => [...prev, newEvent]);
+          // Fetch sale details for the new event
+          setTimeout(() => {
+            if (newEvent.eventId) {
+              refreshSaleDetails(newEvent.eventId);
+            }
+          }, 500);
+        }}
+      />
+    } />
+  
+
+    
+    </Routes>
+  </Router>
   )
+
+
+
 }
 
 declare global {
@@ -1003,5 +1229,6 @@ declare global {
     ethereum?: any
   }
 }
+
 
 export default App

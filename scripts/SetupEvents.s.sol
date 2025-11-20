@@ -18,13 +18,13 @@ contract SetupEvents is Script {
         
         // Configure sales for the three events
         // Event 1: Chainlink Community Conference - 0.01 ETH stake, 50 tickets
-        ticket.configureEventSale(1, 0.01 ether, 500);
+        ticket.configureEventSale(1, 0.01 ether, 500, 50);
         
         // Event 2: Solidity Summit - 0.05 ETH stake, 100 tickets  
-        ticket.configureEventSale(2, 0.05 ether, 100);
+        ticket.configureEventSale(2, 0.05 ether, 100, 75);
         
         // Event 3: Web3 Music Fest - 0.02 ETH stake, 200 tickets
-        ticket.configureEventSale(3, 0.02 ether, 200);
+        ticket.configureEventSale(3, 0.02 ether, 200, 60);
         
         vm.stopBroadcast();
         
