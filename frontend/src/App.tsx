@@ -3,13 +3,20 @@ import { ethers } from 'ethers'
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import AdminPanel from './AdminPanel';
 
-type UpcomingEvent = {
-  id: string
-  name: string
-  date: string
-  venue: string
-  tickets: number
-}
+// Helper to parse date string and return a Date object for sorting
+const parseEventDate = (dateStr: string): Date => {
+  // Try ISO format (YYYY-MM-DD)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const [year, month, day] = dateStr.split('-');
+    return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+  }
+  // Try "MMM DD, YYYY" format (result of formatDate helper)
+  try {
+    return new Date(dateStr);
+  } catch (e) {
+    return new Date(0); // fallback to epoch if parsing fails
+  }
+};
 
 type WorkflowStep = {
   title: string
@@ -39,6 +46,7 @@ type SaleDetails = {
 type ParticipantSnapshot = {
   hasEntered: boolean
   isWinner: boolean
+  hasClaimedRefund?: boolean
 }
 
 const containerStyle: React.CSSProperties = {
@@ -96,33 +104,6 @@ function App() {
     [],
   )
 
-  const upcomingEvents = useMemo<UpcomingEvent[]>(
-    () => [
-      {
-        id: '1',
-        name: 'Doja Cat: Tour Ma Vie World Tour',
-        date: 'Dec 1, 2026',
-        venue: 'Madison Square Garden, NY',
-        tickets: 15000,
-      },
-      {
-        id: '2',
-        name: 'Hamilton (NY)',
-        date: 'Nov 4, 2025',
-        venue: 'Richard Rodgers Theatre, NY',
-        tickets: 300,
-      },
-      {
-        id: '3',
-        name: '2025 Skechers World Champions Cup (Golf), Thursday',
-        date: 'Dec 4, 2025',
-        venue: 'Feather Sound Country Club',
-        tickets: 200,
-      },
-    ],
-    [],
-  )
-
   const workflow = useMemo<WorkflowStep[]>(
     () => [
       {
@@ -150,34 +131,18 @@ function App() {
   )
 
   const fallbackEvents = useMemo<EventMeta[]>(
-    () => [
-      {
-        eventId: 1,
-        name: 'Doja Cat: Tour Ma Vie World Tour',
-        date: 'Dec 1, 2026',
-        venue: 'Madison Square Garden, NY',
-        description: 'Doja Cat will embark on the Tour Ma Vie World Tour in support of her fifth studio album Vie.',
-      },
-      {
-        eventId: 2,
-        name: 'Hamilton (NY)',
-        date: 'Nov 4, 2025',
-        venue: 'Richard Rodgers Theatre, NY',
-        description: 'Hamilton is a sung-and-rapped-through musical that tells the story of American founding father Alexander Hamilton.',
-      },
-      {
-        eventId: 3,
-        name: '2025 Skechers World Champions Cup (Golf), Thursday',
-        date: 'Dec 4, 2025',
-        venue: 'Feather Sound Country Club',
-        description: 'The Skechers World Champions Cup supporting Shriners Children’s is an annual three-team, three-day stroke play tournament that is now the fourth global team competition on the worldwide golf calendar.',
-      },
-    ],
+    () => [],
     [],
   )
 
-
-
+  // Sort events by date (earliest first)
+  const sortedEvents = useMemo(() => {
+    return [...events].sort((a, b) => {
+      const dateA = parseEventDate(a.date);
+      const dateB = parseEventDate(b.date);
+      return dateA.getTime() - dateB.getTime();
+    });
+  }, [events]);
 
   // Configuration state
   const [config, setConfig] = useState<{
@@ -235,6 +200,8 @@ function App() {
     'function runLotteryAsEventOwner(uint256 eventId, uint256 winnersCount, bytes32 randomSeed) external',
     'function eventOwners(uint256) view returns (address)',
     'function getEventMaxTransferPrice(uint256) view returns (uint256)',
+    'function withdrawStake(uint256 eventId) external',
+    'function withdrawEntryBeforeLottery(uint256 eventId) external',
   ],
   [],
 )
@@ -316,13 +283,9 @@ function App() {
       }
       setEvents(remoteEvents)
     } catch (error) {
-      console.warn('Falling back to static events', error)
-      setEvents(fallbackEvents)
-      setEventsError(
-        eventsApiUrl
-          ? 'Unable to load events from backend. Showing sample data instead.'
-          : 'Events API not configured. Showing sample data.',
-      )
+      console.warn('Failed to load events from backend', error)
+      setEvents([])
+      setEventsError(null)
     } finally {
       setEventsLoading(false)
     }
@@ -376,6 +339,7 @@ function App() {
           [eventId]: {
             hasEntered,
             isWinner,
+            hasClaimedRefund: prev[eventId]?.hasClaimedRefund ?? false,
           },
         }))
       } catch (error) {
@@ -592,6 +556,68 @@ function App() {
   [ticketContractWithSigner, walletAddress, refreshParticipantSnapshot, refreshSaleDetails],
 )
 
+const [withdrawingEventId, setWithdrawingEventId] = useState<number | null>(null)
+const handleWithdrawStake = useCallback(
+  async (eventId: number, isBeforeLottery: boolean) => {
+    if (!ticketContractWithSigner) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Connect your wallet to withdraw.',
+      })
+      return
+    }
+
+    try {
+      setWithdrawingEventId(eventId)
+      const functionName = isBeforeLottery ? 'withdrawEntryBeforeLottery' : 'withdrawStake'
+      const actionText = isBeforeLottery ? 'Withdrawing from lottery' : 'Claiming your refund'
+      
+      setStatusMessage({
+        type: 'info',
+        text: `${actionText}... Confirm in your wallet.`,
+      })
+
+      const tx = await ticketContractWithSigner[functionName](eventId)
+      console.log(`📤 ${functionName} tx:`, tx.hash)
+      const receipt = await tx.wait()
+      console.log(`✅ ${functionName} successful!`, receipt)
+
+      setStatusMessage({
+        type: 'success',
+        text: isBeforeLottery 
+          ? `✅ Withdrew from lottery! Your stake has been refunded.`
+          : `✅ Refund claimed! Check your wallet.`,
+      })
+
+      // Mark refund as claimed for post-lottery withdrawals
+      if (!isBeforeLottery) {
+        setParticipantStatus((prev) => ({
+          ...prev,
+          [eventId]: {
+            ...prev[eventId],
+            hasClaimedRefund: true,
+          },
+        }))
+      }
+
+      // Refresh participant status and sale details
+      await refreshParticipantSnapshot(eventId, walletAddress!)
+      await refreshSaleDetails(eventId)
+    } catch (error) {
+      console.error('❌ Withdraw failed:', error)
+      if (error instanceof Error) {
+        setStatusMessage({
+          type: 'error',
+          text: `Withdraw failed: ${error.message}`,
+        })
+      }
+    } finally {
+      setWithdrawingEventId(null)
+    }
+  },
+  [ticketContractWithSigner, walletAddress, refreshParticipantSnapshot, refreshSaleDetails],
+)
+
   return (
     <Router>
       <Routes>
@@ -750,47 +776,53 @@ function App() {
 
         <section style={cardStyle}>
           <h2 style={sectionTitleStyle}>Upcoming on-chain drops</h2>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: '20px',
-            }}
-          >
-            {upcomingEvents.map((event) => (
-              <article
-                key={event.id}
-                style={{
-                  borderRadius: '18px',
-                  border: '1px solid rgba(120, 215, 255, 0.35)',
-                  padding: '22px',
-                  background:
-                    'linear-gradient(150deg, rgba(15, 40, 86, 0.75), rgba(101, 49, 255, 0.25))',
-                  boxShadow: '0 18px 42px rgba(76, 201, 240, 0.22)',
-                  backdropFilter: 'blur(12px)',
-                }}
-              >
-                <h3
+          {events.length === 0 ? (
+            <p style={{ color: 'rgba(219, 228, 255, 0.7)', fontSize: '15px' }}>No events yet. Create one from the Admin Panel!</p>
+          ) : (
+            <div
+              style={{
+                display: 'flex',
+                overflowX: 'auto',
+                gap: '20px',
+                paddingBottom: '12px',
+              }}
+            >
+              {sortedEvents.slice(0, 10).map((event) => (
+                <article
+                  key={event.eventId}
                   style={{
-                    fontSize: '20px',
-                    fontWeight: 600,
-                    marginBottom: '14px',
-                    color: '#fdfbff',
-                    letterSpacing: '0.04em',
-                    textTransform: 'uppercase',
-                    textShadow: '0 0 18px rgba(120, 215, 255, 0.45)',
+                    flex: '0 0 280px',
+                    borderRadius: '18px',
+                    border: '1px solid rgba(120, 215, 255, 0.35)',
+                    padding: '22px',
+                    background:
+                      'linear-gradient(150deg, rgba(15, 40, 86, 0.75), rgba(101, 49, 255, 0.25))',
+                    boxShadow: '0 18px 42px rgba(76, 201, 240, 0.22)',
+                    backdropFilter: 'blur(12px)',
                   }}
                 >
-                  {event.name}
-                </h3>
-                <p style={{ margin: '6px 0', fontWeight: 500, color: '#adf9ff' }}>{event.date}</p>
-                <p style={{ margin: '6px 0', color: 'rgba(244, 244, 255, 0.7)' }}>{event.venue}</p>
-                <p style={{ marginTop: '14px', fontSize: '14px', color: '#ff6fd8', letterSpacing: '0.05em' }}>
-                  {event.tickets} tickets remaining
-                </p>
-              </article>
-            ))}
-          </div>
+                  <h3
+                    style={{
+                      fontSize: '20px',
+                      fontWeight: 600,
+                      marginBottom: '14px',
+                      color: '#fdfbff',
+                      letterSpacing: '0.04em',
+                      textTransform: 'uppercase',
+                      textShadow: '0 0 18px rgba(120, 215, 255, 0.45)',
+                    }}
+                  >
+                    {event.name}
+                  </h3>
+                  <p style={{ margin: '6px 0', fontWeight: 500, color: '#adf9ff' }}>{event.date}</p>
+                  <p style={{ margin: '6px 0', color: 'rgba(244, 244, 255, 0.7)' }}>{event.venue}</p>
+                  {event.description && (
+                    <p style={{ marginTop: '10px', fontSize: '13px', color: 'rgba(219, 228, 255, 0.6)' }}>{event.description}</p>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
         </section>
 
         <section style={cardStyle}>
@@ -1072,7 +1104,7 @@ function App() {
                       </div>
                     )}
 
-                    <div style={{ marginTop: '18px', display: 'flex', gap: '12px' }}>
+                    <div style={{ marginTop: '18px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                       <button
                         type="button"
                         onClick={() => sale && handleEnterSale(event.eventId, sale.stakeAmount)}
@@ -1108,6 +1140,71 @@ function App() {
                           ? 'Lottery closed'
                           : 'Sale closed'}
                       </button>
+
+                      {/* Withdraw before lottery - pre-draw refund */}
+                      {walletAddress && sale?.isOpen && !sale?.lotteryExecuted && participant?.hasEntered && (
+                        <button
+                          type="button"
+                          onClick={() => handleWithdrawStake(event.eventId, true)}
+                          disabled={withdrawingEventId === event.eventId}
+                          style={{
+                            background: withdrawingEventId === event.eventId
+                              ? 'rgba(255, 111, 216, 0.5)'
+                              : 'linear-gradient(135deg, rgba(255,111,216,0.8), rgba(255,157,255,0.8))',
+                            color: '#05060f',
+                            border: '1px solid rgba(255,111,216,0.4)',
+                            padding: '14px 24px',
+                            borderRadius: '14px',
+                            fontSize: '15px',
+                            fontWeight: 700,
+                            cursor: withdrawingEventId === event.eventId ? 'not-allowed' : 'pointer',
+                            transition: 'all 0.2s ease',
+                            boxShadow: '0 18px 38px rgba(255,111,216,0.25)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            opacity: withdrawingEventId === event.eventId ? 0.7 : 1,
+                          }}
+                        >
+                          {withdrawingEventId === event.eventId ? 'Withdrawing…' : '💸 Withdraw Entry'}
+                        </button>
+                      )}
+
+                      {/* Withdraw after lottery - non-winner refund */}
+                      {walletAddress && sale?.lotteryExecuted && participant?.hasEntered && !participant?.isWinner && (
+                        <button
+                          type="button"
+                          onClick={() => handleWithdrawStake(event.eventId, false)}
+                          disabled={withdrawingEventId === event.eventId || participant?.hasClaimedRefund}
+                          style={{
+                            background: participant?.hasClaimedRefund
+                              ? 'rgba(100, 100, 100, 0.4)'
+                              : withdrawingEventId === event.eventId
+                              ? 'rgba(255, 111, 216, 0.5)'
+                              : 'linear-gradient(135deg, rgba(255,111,216,0.8), rgba(255,157,255,0.8))',
+                            color: participant?.hasClaimedRefund ? 'rgba(150, 150, 150, 0.6)' : '#05060f',
+                            border: participant?.hasClaimedRefund 
+                              ? '1px solid rgba(100, 100, 100, 0.2)'
+                              : '1px solid rgba(255,111,216,0.4)',
+                            padding: '14px 24px',
+                            borderRadius: '14px',
+                            fontSize: '15px',
+                            fontWeight: 700,
+                            cursor: participant?.hasClaimedRefund || withdrawingEventId === event.eventId ? 'not-allowed' : 'pointer',
+                            transition: 'all 0.2s ease',
+                            boxShadow: participant?.hasClaimedRefund ? 'none' : '0 18px 38px rgba(255,111,216,0.25)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            opacity: participant?.hasClaimedRefund ? 0.5 : (withdrawingEventId === event.eventId ? 0.7 : 1),
+                          }}
+                        >
+                          {participant?.hasClaimedRefund 
+                            ? '✅ Refund Already Claimed'
+                            : withdrawingEventId === event.eventId 
+                            ? 'Claiming…' 
+                            : '💰 Claim Refund'}
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => refreshSaleDetails(event.eventId)}

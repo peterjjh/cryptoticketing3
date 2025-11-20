@@ -145,6 +145,30 @@ contract Ticket is ERC721, Ownable, ReentrancyGuard {
         emit SaleEntered(eventId, msg.sender, msg.value);
     }
 
+    function withdrawEntryBeforeLottery(uint256 eventId) external nonReentrant {
+        EventSale storage sale = eventSales[eventId];
+        require(sale.isOpen, "Sale not open");
+        require(!sale.lotteryExecuted, "Lottery already run");
+        require(sale.hasEntered[msg.sender], "Not entered");
+
+        // Remove from entrants array (swap-pop for efficiency)
+        for (uint256 i = 0; i < sale.entrants.length; i++) {
+            if (sale.entrants[i] == msg.sender) {
+                sale.entrants[i] = sale.entrants[sale.entrants.length - 1];
+                sale.entrants.pop();
+                break;
+            }
+        }
+
+        sale.hasEntered[msg.sender] = false;
+
+        // Refund the stake
+        (bool success, ) = payable(msg.sender).call{value: sale.stakeAmount}("");
+        require(success, "Refund failed");
+
+        emit StakeWithdrawn(eventId, msg.sender, sale.stakeAmount);
+    }
+
     function runLottery(uint256 eventId, uint256 winnersCount, bytes32 randomSeed) external onlyOwner {
         EventSale storage sale = eventSales[eventId];
         require(sale.isOpen, "Sale not open");

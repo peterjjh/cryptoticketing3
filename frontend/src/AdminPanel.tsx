@@ -21,6 +21,20 @@ type SaleDetails = {
   winnersCount: string
 }
 
+// Helper to format ISO date (YYYY-MM-DD) to readable format (MMM DD, YYYY)
+const formatDate = (isoDate: string): string => {
+  if (!isoDate) return '';
+  try {
+    // Split the ISO date to avoid timezone issues
+    const [year, month, day] = isoDate.split('-');
+    const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    const options: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'short', day: 'numeric' };
+    return date.toLocaleDateString('en-US', options);
+  } catch (e) {
+    return isoDate; // fallback to original if parsing fails
+  }
+};
+
 const AdminPanel = ({ 
   ticketContractWithSigner,
   onEventCreated  // NEW: callback to notify App.tsx
@@ -90,29 +104,42 @@ const AdminPanel = ({
     return merged;
   }, [ownedEvents, createdEventsLocal]);
 
-    const fallbackEvents: EventMeta[] = [
-    {
-      eventId: 1,
-      name: 'Doja Cat: Tour Ma Vie World Tour',
-      date: 'Dec 1, 2026',
-      venue: 'Madison Square Garden, NY',
-      description: 'Doja Cat will embark on the Tour Ma Vie World Tour in support of her fifth studio album Vie.',
-    },
-    {
-      eventId: 2,
-      name: 'Hamilton (NY)',
-      date: 'Nov 4, 2025',
-      venue: 'Richard Rodgers Theatre, NY',
-      description: 'Hamilton is a sung-and-rapped-through musical that tells the story of American founding father Alexander Hamilton.',
-    },
-    {
-      eventId: 3,
-      name: '2025 Skechers World Champions Cup (Golf), Thursday',
-      date: 'Dec 4, 2025',
-      venue: 'Feather Sound Country Club',
-      description: 'The Skechers World Champions Cup supporting Shriners Children\'s is an annual three-team, three-day stroke play tournament.',
-    },
-  ];
+  // Auto-populate lowest available event ID when opening create mode
+  useEffect(() => {
+    if (!createEventMode) return;
+
+    const findLowestAvailableId = async () => {
+      try {
+        const used = new Set<number>();
+        createdEventsLocal.forEach((e) => used.add(e.eventId));
+        ownedEvents.forEach((e) => used.add(e.eventId));
+
+        if (eventsApiUrl) {
+          try {
+            const resp = await fetch(eventsApiUrl);
+            if (resp.ok) {
+              const payload = await resp.json();
+              const list = Array.isArray(payload) ? payload : payload.events || [];
+              list.forEach((it: any) => {
+                const id = Number(it?.eventId ?? it?.id);
+                if (Number.isFinite(id)) used.add(id);
+              });
+            }
+          } catch (e) {
+            // ignore backend fetch failures; we still can use local sets
+          }
+        }
+
+        let id = 1;
+        while (used.has(id)) id++;
+        setNewEventId(String(id));
+      } catch (e) {
+        console.warn('Failed to auto-assign event id', e);
+      }
+    };
+
+    findLowestAvailableId();
+  }, [createEventMode, createdEventsLocal, ownedEvents, eventsApiUrl]);
 
   // Fetch sale details for a specific event
   const fetchSaleDetails = useCallback(async (eventId: number) => {
@@ -204,7 +231,7 @@ const AdminPanel = ({
       const newEvent: EventMeta = {
         eventId: parseInt(newEventId),
         name: newEventName,
-        date: newEventDate,
+        date: formatDate(newEventDate),
         venue: newEventVenue,
         description: newEventDescription,
       };
@@ -543,13 +570,12 @@ const AdminPanel = ({
 
                 <div>
                   <label style={{ display: 'block', marginBottom: '6px', fontSize: '12px', color: '#8ba6ff', fontWeight: 600 }}>
-                    Date
+                    Date (YYYY-MM-DD)
                   </label>
                   <input
-                    type="text"
+                    type="date"
                     value={newEventDate}
                     onChange={(e) => setNewEventDate(e.target.value)}
-                    placeholder="e.g., Dec 1, 2026"
                     style={{
                       width: '100%',
                       padding: '10px 12px',
@@ -781,7 +807,7 @@ const AdminPanel = ({
                 const sale = saleDetails[event.eventId];
                 const isLotteryDone = sale?.lotteryExecuted;
 
-                const handleDeleteEvent = (eventId: number) => {
+                const handleDeleteEvent = async (eventId: number) => {
                     // Remove from local state
                     setCreatedEventsLocal((prev) => {
                     const updated = prev.filter((e) => e.eventId !== eventId);
@@ -798,6 +824,16 @@ const AdminPanel = ({
                     delete updated[eventId];
                     return updated;
                     });
+
+                    // Delete from backend
+                    try {
+                      const response = await fetch(`/api/events/${eventId}`, { method: 'DELETE' });
+                      if (!response.ok) {
+                        console.error('Failed to delete event from backend:', await response.json());
+                      }
+                    } catch (error) {
+                      console.error('Error deleting event from backend:', error);
+                    }
 
                     setStatusMessage({
                     type: 'success',

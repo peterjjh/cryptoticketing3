@@ -91,6 +91,20 @@ fi
 cd ..
 
 echo ""
+echo "🧹 Cleaning up persistent data"
+echo "=============================="
+
+# Clean events.json to prevent ghost events from old test runs
+if [ -f "data/events.json" ]; then
+    echo "[]" > data/events.json
+    print_status "Cleaned data/events.json"
+else
+    mkdir -p data
+    echo "[]" > data/events.json
+    print_status "Created fresh data/events.json"
+fi
+
+echo ""
 echo "🎉 Setup Complete!"
 echo "=================="
 echo ""
