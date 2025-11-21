@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "buffer": "^6.0.3",
     "ethers": "^5.7.2",
     "html5-qrcode": "^2.3.8",
     "qrcode.react": "^4.2.0",

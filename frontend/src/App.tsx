@@ -634,6 +634,12 @@ function App() {
   const [pendingTransfers, setPendingTransfers] = useState<any[]>([])
   const [transferringEventId, setTransferringEventId] = useState<number | null>(null)
   const [storageUpdateTrigger, setStorageUpdateTrigger] = useState<number>(0) // Force reload trigger
+  // Debug flag (enable by setting localStorage key 'cryptoTicketing_debug' to 'true')
+  const debugEnabled = useMemo(() => {
+    try {
+      return localStorage.getItem('cryptoTicketing_debug') === 'true'
+    } catch { return false }
+  }, [])
   
   // Load purchased claim rights from localStorage
   useEffect(() => {
@@ -949,85 +955,149 @@ function App() {
     [ticketContractWithSigner, walletAddress, participantStatus, setStorageUpdateTrigger],
   )
 
-  const handleClaimTicket = useCallback(
-  async (eventId: number) => {
-    if (!ticketContractWithSigner) {
-      setStatusMessage({
-        type: 'error',
-        text: 'Connect your wallet to claim a ticket.',
-      })
-      return
-    }
-
+  // Safe JSON parse helper
+  const safeParseArray = (key: string): any[] => {
     try {
-      setClaimingTicket(eventId)
-      setStatusMessage({
-        type: 'info',
-        text: 'Minting your NFT ticket... Confirm in your wallet.',
-      })
+      const raw = localStorage.getItem(key)
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed : []
+    } catch (e) {
+      console.warn(`⚠️ Corrupted localStorage key '${key}', resetting.`, e)
+      localStorage.removeItem(key)
+      return []
+    }
+  }
 
-      const tx = await ticketContractWithSigner.claimTicket(eventId)
-      console.log('📋 Claim tx:', tx.hash)
-      const receipt = await tx.wait()
-      console.log('✅ Ticket claimed successfully!', receipt)
+  const handleClaimTicket = useCallback(
+    async (eventId: number) => {
+      if (!ticketContractWithSigner || !walletAddress) {
+        setStatusMessage({
+          type: 'error',
+          text: 'Connect your wallet to claim a ticket.',
+        })
+        return
+      }
 
-      // Extract tokenId from events
-      const ticketMintedEvent = receipt.events?.find((e: any) => e.event === 'TicketMinted')
-      const tokenId = ticketMintedEvent?.args?.tokenId?.toNumber() || 0
+      try {
+        setClaimingTicket(eventId)
+        setStatusMessage({
+          type: 'info',
+          text: 'Minting your NFT ticket... Confirm in your wallet.',
+        })
 
-      // Store claimed ticket
-      setClaimedTickets((prev) => ({
-        ...prev,
-        [eventId]: [...(prev[eventId] || []), { tokenId, eventId }],
-      }))
+        const tx = await ticketContractWithSigner.claimTicket(eventId)
+        console.log('📋 Claim tx:', tx.hash)
+        const receipt = await tx.wait()
+        console.log('✅ Ticket claimed receipt:', receipt)
 
-      // Remove from marketplace if this was a listed claim right
-      const resoldTickets = JSON.parse(localStorage.getItem('cryptoTicketing_resoldTickets') || '[]')
-      const updatedResoldTickets = resoldTickets.filter(
-        (t: any) => !(t.eventId === eventId && t.isClaimRight && t.seller === walletAddress)
-      )
-      localStorage.setItem('cryptoTicketing_resoldTickets', JSON.stringify(updatedResoldTickets))
+        // Defensive tokenId extraction
+        let extractedTokenId: number | null = null
+        try {
+          const mintedEvent = receipt.events?.find((e: any) => e.event === 'TicketMinted' || e.topics?.length)
+          // Prefer decoded args; fallback to first numeric arg heuristic
+          if (mintedEvent?.args) {
+            // Common patterns: args.tokenId or args[0]
+            if (mintedEvent.args.tokenId) {
+              extractedTokenId = mintedEvent.args.tokenId.toNumber?.() ?? Number(mintedEvent.args.tokenId)
+            } else if (mintedEvent.args[0]) {
+              const candidate = mintedEvent.args[0]
+              extractedTokenId = candidate.toNumber?.() ?? Number(candidate)
+            }
+          }
+        } catch (parseErr) {
+          console.warn('⚠️ Failed to parse TicketMinted event:', parseErr)
+        }
 
-      // Remove from purchased claim rights if applicable
-      const claimRights = JSON.parse(localStorage.getItem('cryptoTicketing_claimRights') || '[]')
-      const updatedClaimRights = claimRights.filter(
-        (r: any) => !(r.eventId === eventId && r.newOwner === walletAddress)
-      )
-      localStorage.setItem('cryptoTicketing_claimRights', JSON.stringify(updatedClaimRights))
-      setPurchasedClaimRights(updatedClaimRights.filter((r: any) => r.newOwner === walletAddress))
+        // Fallback: derive from sale details if not found (ticketsMinted is post-increment)
+        if (extractedTokenId == null) {
+          try {
+            const sale = saleDetails[eventId]
+            if (sale) {
+              const mintedCount = Number(sale.ticketsMinted)
+              if (Number.isFinite(mintedCount) && mintedCount > 0) {
+                extractedTokenId = mintedCount // assumes sequential starting at 1
+                console.log('🛟 Fallback tokenId from sale.ticketsMinted:', extractedTokenId)
+              }
+            }
+          } catch (fallbackErr) {
+            console.warn('Fallback tokenId derivation failed:', fallbackErr)
+          }
+        }
 
-      setStatusMessage({
-        type: 'success',
-        text: `🎫 NFT Ticket #${tokenId} claimed! Check your wallet.`,
-      })
-
-      // Refresh participant status
-      await refreshParticipantSnapshot(eventId, walletAddress!)
-      await refreshSaleDetails(eventId)
-    } catch (error) {
-      console.error('❌ Claim failed:', error)
-      if (error instanceof Error) {
-        // Check if already claimed
-        if (error.message.includes('Already claimed')) {
-          setStatusMessage({
-            type: 'success',
-            text: `✅ Ticket already claimed! Check your wallet for your NFT.`,
-          })
-          // Still refresh to update UI
-          await refreshParticipantSnapshot(eventId, walletAddress!)
-        } else {
+        // If still null, warn and abort UI update
+        if (extractedTokenId == null) {
           setStatusMessage({
             type: 'error',
-            text: `Failed to claim ticket: ${error.message}`,
+            text: 'Ticket claimed but tokenId not parsed. Refresh data or check explorer.',
+          })
+        } else {
+          // Persist in state
+            setClaimedTickets((prev) => ({
+              ...prev,
+              [eventId]: [...(prev[eventId] || []), { tokenId: extractedTokenId!, eventId }],
+            }))
+          // Persist to localStorage for cross-page visibility (for ResalePanel)
+          try {
+            const claimedStoreRaw = localStorage.getItem('cryptoTicketing_claimedTickets')
+            const claimedArr = claimedStoreRaw ? JSON.parse(claimedStoreRaw) : []
+            const eventName = events.find(e => e.eventId === eventId)?.name || `Event #${eventId}`
+            claimedArr.push({ tokenId: extractedTokenId, eventId, eventName, owner: walletAddress })
+            localStorage.setItem('cryptoTicketing_claimedTickets', JSON.stringify(claimedArr))
+          } catch (e) {
+            console.warn('Failed to persist claimed ticket to localStorage', e)
+          }
+          setStatusMessage({
+            type: 'success',
+            text: `🎫 NFT Ticket #${extractedTokenId} claimed! Check your wallet.`,
           })
         }
+
+        // Cleanup marketplace / claim right records safely
+        const resoldTicketsArr = safeParseArray('cryptoTicketing_resoldTickets')
+        const cleanedResold = resoldTicketsArr.filter(
+          (t: any) => !(t?.eventId === eventId && t?.isClaimRight && t?.seller?.toLowerCase() === walletAddress.toLowerCase())
+        )
+        if (cleanedResold.length !== resoldTicketsArr.length) {
+          localStorage.setItem('cryptoTicketing_resoldTickets', JSON.stringify(cleanedResold))
+        }
+
+        const claimRightsArr = safeParseArray('cryptoTicketing_claimRights')
+        const cleanedRights = claimRightsArr.filter(
+          (r: any) => !(r?.eventId === eventId && r?.newOwner?.toLowerCase() === walletAddress.toLowerCase())
+        )
+        if (cleanedRights.length !== claimRightsArr.length) {
+          localStorage.setItem('cryptoTicketing_claimRights', JSON.stringify(cleanedRights))
+        }
+        setPurchasedClaimRights(cleanedRights.filter((r: any) => r?.newOwner?.toLowerCase() === walletAddress.toLowerCase()))
+
+        // Refresh participant status & sale details regardless of outcome
+        await refreshParticipantSnapshot(eventId, walletAddress)
+        await refreshSaleDetails(eventId)
+      } catch (error) {
+        console.error('❌ Claim failed:', error)
+        if (error instanceof Error) {
+          if (error.message.includes('Already claimed')) {
+            setStatusMessage({
+              type: 'success',
+              text: '✅ Ticket already claimed! Check your wallet for your NFT.',
+            })
+            await refreshParticipantSnapshot(eventId, walletAddress)
+          } else {
+            setStatusMessage({
+              type: 'error',
+              text: `Failed to claim ticket: ${error.message}`,
+            })
+          }
+        } else {
+          setStatusMessage({ type: 'error', text: 'Failed to claim ticket: Unknown error.' })
+        }
+      } finally {
+        setClaimingTicket(null)
       }
-    } finally {
-      setClaimingTicket(null)
-    }
-  },
-  [ticketContractWithSigner, walletAddress, refreshParticipantSnapshot, refreshSaleDetails],
-)
+    },
+    [ticketContractWithSigner, walletAddress, refreshParticipantSnapshot, refreshSaleDetails, saleDetails],
+  )
 
 const [withdrawingEventId, setWithdrawingEventId] = useState<number | null>(null)
 const handleWithdrawStake = useCallback(
@@ -1628,11 +1698,13 @@ const handleWithdrawStake = useCallback(
                               // Check if this user has sold their claim right (lottery winner who listed it)
                               const hasSoldClaimRight = soldClaimRights.has(`${event.eventId}-${normalizedWallet}`);
                               
-                              console.log(`🔍 Checking soldClaimRights for Event ${event.eventId}:`, {
-                                soldClaimRightsSet: Array.from(soldClaimRights),
-                                lookingFor: `${event.eventId}-${normalizedWallet}`,
-                                hasSoldClaimRight,
-                              });
+                              if (debugEnabled) {
+                                console.log(`🔍 Checking soldClaimRights for Event ${event.eventId}:`, {
+                                  soldClaimRightsSet: Array.from(soldClaimRights),
+                                  lookingFor: `${event.eventId}-${normalizedWallet}`,
+                                  hasSoldClaimRight,
+                                });
+                              }
                               
                               // Check if this user has purchased a claim right from someone else
                               const hasPurchasedClaimRight = purchasedClaimRights.some((r: any) => 
@@ -1643,13 +1715,15 @@ const handleWithdrawStake = useCallback(
                                 r.eventId === event.eventId && r.newOwner?.toLowerCase() === normalizedWallet && r.originalWinner?.toLowerCase() !== normalizedWallet
                               );
                               
-                              console.log(`📊 Event ${event.eventId} Status Check:`, {
-                                isWinner: participant?.isWinner,
-                                hasEntered: participant?.hasEntered,
-                                hasSoldClaimRight,
-                                hasPurchasedClaimRight,
-                                normalizedWallet
-                              });
+                              if (debugEnabled) {
+                                console.log(`📊 Event ${event.eventId} Status Check:`, {
+                                  isWinner: participant?.isWinner,
+                                  hasEntered: participant?.hasEntered,
+                                  hasSoldClaimRight,
+                                  hasPurchasedClaimRight,
+                                  normalizedWallet
+                                });
+                              }
                               
                               /* ═══════════════════════════════════════════════════════════════
                                * 4 CASES OF USER STATUS AFTER LOTTERY:
@@ -1691,12 +1765,27 @@ const handleWithdrawStake = useCallback(
 
                               // CASE 1: User is a current on-chain lottery winner (and hasn't sold)
                               if (participant?.isWinner) {
-                                // If winner status was obtained via purchase, suppress winner messaging
+                                // Winner via purchase (transferred status)
                                 if (hasPurchasedFromOthers) {
-                                  console.log(`🔁 Purchased winner status for event ${event.eventId}; hiding winner banner`);
-                                  return null;
+                                  if (debugEnabled) console.log(`🔁 Purchased winner status for event ${event.eventId}; showing transfer banner`);
+                                  return (
+                                    <div
+                                      style={{
+                                        padding: '14px 16px',
+                                        borderRadius: '12px',
+                                        background: 'rgba(255, 157, 255, 0.16)',
+                                        color: '#ff9dff',
+                                        fontSize: '14px',
+                                        letterSpacing: '0.05em',
+                                        border: '1px solid rgba(255,157,255,0.35)',
+                                        fontWeight: 600,
+                                      }}
+                                    >
+                                      🎟️ Winner status transferred – you can claim the NFT.
+                                    </div>
+                                  );
                                 }
-                                // Winner who hasn't sold
+                                // Original winner who hasn't sold
                                 return (
                                   <div
                                     style={{
@@ -1718,7 +1807,7 @@ const handleWithdrawStake = useCallback(
                               // CASE 2: Lost lottery BUT purchased a claim right
                               // Hide lottery results ONLY if user actually entered and lost
                               if (hasPurchasedClaimRight && participant?.hasEntered && !participant?.isWinner) {
-                                console.log(`✅ CASE 2: User lost lottery but purchased claim right for event ${event.eventId}, hiding lottery results`);
+                                if (debugEnabled) console.log(`✅ CASE 2: User lost lottery but purchased claim right for event ${event.eventId}, hiding lottery results`);
                                 return null;
                               }
                               
@@ -1957,7 +2046,23 @@ const handleWithdrawStake = useCallback(
                             })()}
                             {/* Claimed tickets list (available for both original winners and purchased claim right holders) */}
                             {claimedTickets[event.eventId]?.length > 0 && (
-                              <div style={{ marginTop: '16px' }}>
+                              <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                {soldClaimRights.has(`${event.eventId}-${walletAddress?.toLowerCase()}`) && (
+                                  <div
+                                    style={{
+                                      padding: '10px 14px',
+                                      borderRadius: '10px',
+                                      background: 'rgba(255,114,249,0.16)',
+                                      color: '#ff48f9',
+                                      fontSize: '12px',
+                                      letterSpacing: '0.06em',
+                                      border: '1px solid rgba(255,114,249,0.35)',
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    🔒 CLAIM RIGHT SOLD — Ticket holder view only (NFT now claimable by buyer)
+                                  </div>
+                                )}
                                 <ClaimedTicketsList
                                   tickets={claimedTickets[event.eventId]}
                                   eventName={event.name}

@@ -21,6 +21,13 @@ type EventMeta = {
   venue: string;
 };
 
+type ClaimedTicket = {
+  tokenId: number;
+  eventId: number;
+  eventName: string;
+  owner: string;
+};
+
 const ResalePanel = ({ 
   ticketContractWithSigner,
   walletAddress 
@@ -34,6 +41,7 @@ const ResalePanel = ({
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [purchasingTokenId, setPurchasingTokenId] = useState<number | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [claimedTickets, setClaimedTickets] = useState<ClaimedTicket[]>([]);
 
   const eventsApiUrl = import.meta.env.VITE_EVENTS_API as string | undefined;
 
@@ -152,21 +160,47 @@ const ResalePanel = ({
     }
   }, []);
 
+  // Load claimed tickets from localStorage (persisted by App claim handler)
+  const loadClaimedTickets = useCallback(() => {
+    try {
+      const raw = localStorage.getItem('cryptoTicketing_claimedTickets');
+      if (!raw) { setClaimedTickets([]); return; }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) { setClaimedTickets([]); return; }
+      // Filter for current wallet ownership
+      const mine = walletAddress ? parsed.filter((t: any) => t.owner?.toLowerCase() === walletAddress.toLowerCase()) : [];
+      // Deduplicate by tokenId
+      const uniqueMap: Record<number, ClaimedTicket> = {};
+      mine.forEach((t: any) => {
+        const tokenIdNum = Number(t.tokenId);
+        if (!Number.isFinite(tokenIdNum)) return;
+        if (!uniqueMap[tokenIdNum]) {
+          uniqueMap[tokenIdNum] = {
+            tokenId: tokenIdNum,
+            eventId: Number(t.eventId),
+            eventName: String(t.eventName || `Event #${t.eventId}`),
+            owner: String(t.owner),
+          };
+        }
+      });
+      setClaimedTickets(Object.values(uniqueMap));
+    } catch (e) {
+      console.warn('Failed to load claimed tickets', e);
+      setClaimedTickets([]);
+    }
+  }, [walletAddress]);
+
   useEffect(() => {
     loadResoldTickets();
-    
-    // Reload tickets when window gains focus (user returns to page)
-    const handleFocus = () => {
+    loadClaimedTickets();
+    const focusReload = () => {
       console.log('Window focused, reloading tickets...');
       loadResoldTickets();
+      loadClaimedTickets();
     };
-    
-    window.addEventListener('focus', handleFocus);
-    
-    return () => {
-      window.removeEventListener('focus', handleFocus);
-    };
-  }, [loadResoldTickets]);
+    window.addEventListener('focus', focusReload);
+    return () => window.removeEventListener('focus', focusReload);
+  }, [loadResoldTickets, loadClaimedTickets]);
 
   const handlePurchase = async (ticket: ResoldTicket) => {
     if (!ticketContractWithSigner || !walletAddress) {
@@ -320,8 +354,15 @@ const ResalePanel = ({
   console.log('===== RESALE PANEL RENDER =====');
   console.log('Current resoldTickets state:', resoldTickets);
   console.log('Number of tickets in state:', resoldTickets.length);
+  console.log('Claimed tickets (owned):', claimedTickets);
   console.log('Is loading:', isLoading);
   console.log('===============================');
+
+  // Compute list of tickets to display (filter out claim rights already sold)
+  const visibleTickets = resoldTickets.filter((t) => {
+    if (t.isClaimRight && (t as any).sold) return false; // hide sold claim rights
+    return true;
+  });
 
   return (
     <div
@@ -428,7 +469,7 @@ const ResalePanel = ({
             <p style={{ color: '#8ba6ff', textAlign: 'center', padding: '40px 0' }}>
               Loading resale tickets...
             </p>
-          ) : resoldTickets.length === 0 ? (
+          ) : visibleTickets.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
               <p style={{ color: '#8ba6ff', fontSize: '18px', marginBottom: '16px' }}>
                 No tickets available for resale yet.
@@ -439,9 +480,16 @@ const ResalePanel = ({
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
-              {resoldTickets.map((ticket) => (
+              {visibleTickets.map((ticket) => {
+                const sellerAddress = ticket.seller || '0x0000000000000000000000000000000000000000';
+                const shortSeller = sellerAddress.length >= 10 ? `${sellerAddress.slice(0,6)}...${sellerAddress.slice(-4)}` : sellerAddress;
+                const isPurchasing = purchasingTokenId === (ticket.tokenId ?? ticket.eventId);
+                const listKey = ticket.isClaimRight
+                  ? `claim-${ticket.eventId}-${sellerAddress.toLowerCase()}`
+                  : `token-${ticket.tokenId}`;
+                return (
                 <div
-                  key={ticket.tokenId}
+                  key={listKey}
                   style={{
                     background: 'linear-gradient(135deg, rgba(15, 40, 86, 0.75), rgba(101, 49, 255, 0.25))',
                     borderRadius: '18px',
@@ -508,7 +556,7 @@ const ResalePanel = ({
                     <div>
                       <p style={{ margin: 0, fontSize: '11px', color: '#8ba6ff', letterSpacing: '0.08em' }}>Seller</p>
                       <strong style={{ fontSize: '12px', color: '#dbe4ff', wordBreak: 'break-all' }}>
-                        {ticket.seller.slice(0, 6)}...{ticket.seller.slice(-4)}
+                        {shortSeller}
                       </strong>
                     </div>
                     <div
@@ -528,23 +576,23 @@ const ResalePanel = ({
 
                   <button
                     onClick={() => handlePurchase(ticket)}
-                    disabled={!walletAddress || purchasingTokenId === ticket.tokenId}
+                    disabled={!walletAddress || isPurchasing}
                     style={{
                       background:
-                        !walletAddress || purchasingTokenId === ticket.tokenId
+                        !walletAddress || isPurchasing
                           ? 'rgba(120, 115, 255, 0.25)'
                           : 'linear-gradient(135deg, rgba(0,255,224,0.9), rgba(255,111,216,0.9))',
-                      color: !walletAddress || purchasingTokenId === ticket.tokenId ? 'rgba(219, 228, 255, 0.5)' : '#05060f',
+                      color: !walletAddress || isPurchasing ? 'rgba(219, 228, 255, 0.5)' : '#05060f',
                       padding: '14px 24px',
                       borderRadius: '12px',
                       fontSize: '14px',
                       fontWeight: 700,
-                      cursor: !walletAddress || purchasingTokenId === ticket.tokenId ? 'not-allowed' : 'pointer',
+                      cursor: !walletAddress || isPurchasing ? 'not-allowed' : 'pointer',
                       border: '1px solid rgba(105,246,255,0.4)',
                       textTransform: 'uppercase',
                       letterSpacing: '0.08em',
                       boxShadow:
-                        !walletAddress || purchasingTokenId === ticket.tokenId
+                        !walletAddress || isPurchasing
                           ? 'none'
                           : '0 18px 38px rgba(0,255,224,0.35)',
                       width: '100%',
@@ -553,14 +601,91 @@ const ResalePanel = ({
                   >
                     {!walletAddress
                       ? 'Connect Wallet'
-                      : purchasingTokenId === (ticket.tokenId || ticket.eventId)
+                      : isPurchasing
                       ? '⏳ Purchasing...'
                       : ticket.isClaimRight
                       ? '🎟️ Buy Claim Right'
                       : '🛒 Purchase Ticket'}
                   </button>
                 </div>
-              ))}
+              );})}
+            </div>
+          )}
+
+          {/* Claimed Tickets Owned by User */}
+          {walletAddress && claimedTickets.length > 0 && (
+            <div style={{ marginTop: '48px' }}>
+              <h3
+                style={{
+                  fontSize: '22px',
+                  marginBottom: '18px',
+                  fontWeight: 600,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: '#0ddfc2',
+                  textShadow: '0 0 18px rgba(0, 255, 224, 0.55)',
+                }}
+              >
+                Your Claimed NFT Tickets
+              </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
+                {claimedTickets.map(ticket => (
+                  <div
+                    key={ticket.tokenId}
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(0, 255, 224, 0.12), rgba(62,203,250,0.20))',
+                      borderRadius: '18px',
+                      border: '1px solid rgba(0,255,224,0.35)',
+                      padding: '24px',
+                      boxShadow: '0 18px 42px rgba(0,255,224,0.22)',
+                      backdropFilter: 'blur(12px)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '12px'
+                    }}
+                  >
+                    <h4 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: '#fdfbff', letterSpacing: '0.05em' }}>{ticket.eventName}</h4>
+                    <div style={{ display: 'flex', gap: '18px' }}>
+                      <div>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#8ba6ff', letterSpacing: '0.08em' }}>Token ID</p>
+                        <strong style={{ fontSize: '16px', color: '#69f6ff' }}>#{ticket.tokenId}</strong>
+                      </div>
+                      <div>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#8ba6ff', letterSpacing: '0.08em' }}>Event ID</p>
+                        <strong style={{ fontSize: '16px', color: '#ff9dff' }}>#{ticket.eventId}</strong>
+                      </div>
+                    </div>
+                    <div>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#8ba6ff', letterSpacing: '0.08em' }}>Owner</p>
+                      <strong style={{ fontSize: '12px', color: '#dbe4ff' }}>{walletAddress.slice(0,6)}...{walletAddress.slice(-4)}</strong>
+                    </div>
+                    <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+                      <button
+                        onClick={() => {
+                          // Navigate to listing flow via Link state simulation
+                          window.location.href = `/resale?listToken=${ticket.tokenId}&eventId=${ticket.eventId}`
+                        }}
+                        style={{
+                          flex: 1,
+                          background: 'linear-gradient(135deg, rgba(255,111,216,0.85), rgba(255,157,255,0.85))',
+                          color: '#05060f',
+                          border: '1px solid rgba(255,111,216,0.4)',
+                          padding: '12px 18px',
+                          borderRadius: '12px',
+                          fontSize: '13px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.08em',
+                          boxShadow: '0 12px 30px rgba(255,111,216,0.25)'
+                        }}
+                      >
+                        💰 List for Resale
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
