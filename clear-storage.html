@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clear Storage</title>
+</head>
+<body>
+    <h1>Clearing localStorage...</h1>
+    <script>
+        localStorage.removeItem('cryptoTicketing_pendingTransfers');
+        localStorage.removeItem('cryptoTicketing_claimRights');
+        localStorage.removeItem('cryptoTicketing_resoldTickets');
+        localStorage.removeItem('cryptoTicketing_soldClaimRights');
+        document.body.innerHTML += '<p style="color: green; font-size: 20px;">✅ All pending transactions and storage cleared!</p>';
+        document.body.innerHTML += '<p>You can close this tab and refresh your app.</p>';
+        console.log('✅ Cleared all cryptoTicketing localStorage items');
+    </script>
+</body>
+</html>

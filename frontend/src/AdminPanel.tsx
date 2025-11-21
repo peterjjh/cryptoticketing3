@@ -37,7 +37,7 @@ const formatDate = (isoDate: string): string => {
 
 const AdminPanel = ({ 
   ticketContractWithSigner,
-  onEventCreated  // NEW: callback to notify App.tsx
+  onEventCreated,  // NEW: callback to notify App.tsx
 }: { 
   ticketContractWithSigner: any
   onEventCreated?: (event: EventMeta) => void  // NEW
@@ -130,6 +130,22 @@ const AdminPanel = ({
           }
         }
 
+        // NEW: Check blockchain for existing events (check IDs 1-100)
+        if (ticketContractWithSigner) {
+          for (let id = 1; id <= 100; id++) {
+            try {
+              const sale = await ticketContractWithSigner.getSaleOverview(id);
+              // If the event has been configured (stakeAmount > 0 or isOpen), mark as used
+              if (sale.stakeAmount.gt(0) || sale.isOpen) {
+                used.add(id);
+                console.log(`Event ID ${id} already exists on blockchain`);
+              }
+            } catch (e) {
+              // Event doesn't exist, continue
+            }
+          }
+        }
+
         let id = 1;
         while (used.has(id)) id++;
         setNewEventId(String(id));
@@ -139,7 +155,7 @@ const AdminPanel = ({
     };
 
     findLowestAvailableId();
-  }, [createEventMode, createdEventsLocal, ownedEvents, eventsApiUrl]);
+  }, [createEventMode, createdEventsLocal, ownedEvents, eventsApiUrl, ticketContractWithSigner]);
 
   // Fetch sale details for a specific event
   const fetchSaleDetails = useCallback(async (eventId: number) => {

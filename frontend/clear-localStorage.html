@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Clear localStorage - Crypto Ticketing</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #0a0a0a;
+            color: #0ddfc2;
+            text-align: center;
+        }
+        h1 {
+            color: #ff72f9;
+        }
+        button {
+            background: #ff72f9;
+            color: #000;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 10px;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #69f6ff;
+        }
+        .success {
+            color: #0ddfc2;
+            margin-top: 20px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🗑️ Clear Corrupted localStorage</h1>
+    <p>This will clear all resold tickets and claim rights data.</p>
+    <p>Use this if you're getting BigNumber errors.</p>
+    
+    <button onclick="clearAll()">Clear All Data</button>
+    <button onclick="window.location.href='/'">Go to App</button>
+    
+    <div id="result"></div>
+
+    <script>
+        function clearAll() {
+            try {
+                localStorage.removeItem('cryptoTicketing_resoldTickets');
+                localStorage.removeItem('cryptoTicketing_claimRights');
+                
+                document.getElementById('result').innerHTML = 
+                    '<div class="success">✅ Successfully cleared:<br>- Resold Tickets<br>- Claim Rights<br><br>You can now close this page and use the app.</div>';
+                
+                console.log('localStorage cleared successfully');
+            } catch (error) {
+                document.getElementById('result').innerHTML = 
+                    '<div style="color: #ff72f9">❌ Error: ' + error.message + '</div>';
+            }
+        }
+    </script>
+</body>
+</html>

@@ -40,7 +40,7 @@ contract TicketTest is Test {
 
     function testSaleWorkflowLotteryClaimAndWithdraw() public {
         vm.prank(owner);
-        ticket.configureEventSale(1, 1 ether, 1);
+        ticket.configureEventSale(1, 1 ether, 1, 50); // Added maxTransferPricePercent parameter
 
         vm.deal(user, 2 ether);
         vm.deal(userTwo, 2 ether);
@@ -77,7 +77,7 @@ contract TicketTest is Test {
         uint256 tokenId = ticket.mint(user, 7);
 
         vm.prank(user);
-        ticket.transferTicket(tokenId, userTwo);
+        ticket.transferTicket(tokenId, userTwo, 0); // Added transferPrice parameter (0 for free transfer)
         assertEq(ticket.ownerOf(tokenId), userTwo);
 
         bool valid = ticket.verifyTicket(tokenId, 7, userTwo);

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Check localStorage - Crypto Ticketing</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #0a0a0a;
+            color: #0ddfc2;
+        }
+        h1 {
+            color: #69f6ff;
+        }
+        pre {
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            border: 1px solid #69f6ff;
+        }
+        button {
+            background: #0ddfc2;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+        }
+        button:hover {
+            background: #69f6ff;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #333;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 localStorage Debug Tool</h1>
+    
+    <div class="section">
+        <h2>Resold Tickets</h2>
+        <button onclick="loadResoldTickets()">🔄 Reload</button>
+        <button onclick="clearResoldTickets()">🗑️ Clear All</button>
+        <pre id="resoldTickets">Loading...</pre>
+    </div>
+    
+    <div class="section">
+        <h2>Claim Rights</h2>
+        <button onclick="loadClaimRights()">🔄 Reload</button>
+        <button onclick="clearClaimRights()">🗑️ Clear All</button>
+        <pre id="claimRights">Loading...</pre>
+    </div>
+    
+    <div class="section">
+        <h2>Created Events</h2>
+        <button onclick="loadEvents()">🔄 Reload</button>
+        <pre id="events">Loading...</pre>
+    </div>
+
+    <script>
+        function loadResoldTickets() {
+            const stored = localStorage.getItem('cryptoTicketing_resoldTickets');
+            const element = document.getElementById('resoldTickets');
+            if (stored) {
+                const parsed = JSON.parse(stored);
+                element.textContent = JSON.stringify(parsed, null, 2);
+                element.style.color = '#0ddfc2';
+            } else {
+                element.textContent = 'No resold tickets found in localStorage';
+                element.style.color = '#ff72f9';
+            }
+        }
+
+        function clearResoldTickets() {
+            if (confirm('Are you sure you want to clear all resold tickets?')) {
+                localStorage.removeItem('cryptoTicketing_resoldTickets');
+                loadResoldTickets();
+                alert('Resold tickets cleared!');
+            }
+        }
+
+        function loadClaimRights() {
+            const stored = localStorage.getItem('cryptoTicketing_claimRights');
+            const element = document.getElementById('claimRights');
+            if (stored) {
+                const parsed = JSON.parse(stored);
+                element.textContent = JSON.stringify(parsed, null, 2);
+                element.style.color = '#0ddfc2';
+            } else {
+                element.textContent = 'No claim rights found in localStorage';
+                element.style.color = '#ff72f9';
+            }
+        }
+
+        function clearClaimRights() {
+            if (confirm('Are you sure you want to clear all claim rights?')) {
+                localStorage.removeItem('cryptoTicketing_claimRights');
+                loadClaimRights();
+                alert('Claim rights cleared!');
+            }
+        }
+
+        function loadEvents() {
+            const stored = localStorage.getItem('cryptoTicketing_createdEvents');
+            const element = document.getElementById('events');
+            if (stored) {
+                const parsed = JSON.parse(stored);
+                element.textContent = JSON.stringify(parsed, null, 2);
+                element.style.color = '#0ddfc2';
+            } else {
+                element.textContent = 'No events found in localStorage';
+                element.style.color = '#ff72f9';
+            }
+        }
+
+        // Auto-load on page load
+        window.onload = () => {
+            loadResoldTickets();
+            loadClaimRights();
+            loadEvents();
+        };
+
+        // Auto-refresh every 3 seconds
+        setInterval(() => {
+            loadResoldTickets();
+            loadClaimRights();
+            loadEvents();
+        }, 3000);
+    </script>
+</body>
+</html>

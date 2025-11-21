@@ -281,6 +281,23 @@ contract Ticket is ERC721, Ownable, ReentrancyGuard {
         emit StakeWithdrawn(eventId, msg.sender, amount);
     }
 
+    // NEW: Transfer winner status to another address (for claim right resales)
+    function transferWinnerStatus(uint256 eventId, address to) external nonReentrant {
+        EventSale storage sale = eventSales[eventId];
+        require(sale.lotteryExecuted, "Lottery not run");
+        require(sale.isWinner[msg.sender], "Not a winner");
+        require(!sale.hasClaimed[msg.sender], "Already claimed");
+        require(to != address(0), "Invalid recipient");
+        require(!sale.isWinner[to], "Recipient already a winner");
+        require(!sale.hasClaimed[to], "Recipient already claimed");
+
+        // Transfer winner status
+        sale.isWinner[msg.sender] = false;
+        sale.isWinner[to] = true;
+
+        emit TicketClaimed(eventId, 0, to); // Reuse event to signal transfer (tokenId=0 means not minted yet)
+    }
+
     // NEW: Modified transfer with price enforcement
     function transferTicket(uint256 tokenId, address to, uint256 transferPrice) external payable nonReentrant {
         require(_ownerOf(tokenId) == msg.sender, "Not ticket owner");
